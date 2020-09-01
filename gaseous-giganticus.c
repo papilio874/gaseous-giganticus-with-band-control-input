@@ -51,11 +51,13 @@ static int nthreads = 4;
 static int user_threads = -1;
 static const int image_threads = 6; /* for 6 faces of cubemap, don't change this */
 static char *default_output_file_prefix = "gasgiant-";
-static char *default_input_file = "gasgiant-input.png";
+static char *default_color_input_file = "gasgiant-color-input.png";
+static char *default_bands_input_file = "gasgiant-bands-input.png";
 static char *vf_dump_file = NULL;
 static int restore_vf_data = 0;
 static char *output_file_prefix;
-static char *input_file;
+static char *color_input_file;
+static char *bands_input_file;
 static char *cubemap_prefix = NULL;
 static int nofade = 0;
 static int stripe = 0;
@@ -105,9 +107,11 @@ static float opacity = 1.0;
 static float opacity_limit = 0.2;
 static float pole_attenuation = 0.5;
 
-static char *start_image;
+static char *color_image;
+static char *bands_image;
 static unsigned char *cubemap_image[6] = { 0 };
-static int start_image_width, start_image_height, start_image_has_alpha, start_image_bytes_per_row;
+static int color_image_width, color_image_height, color_image_has_alpha, color_image_bytes_per_row;
+static int bands_image_width, bands_image_height, bands_image_has_alpha, bands_image_bytes_per_row;
 static unsigned char *output_image[6];
 static int image_save_period = 20;
 static float w_offset = 0.0;
@@ -128,6 +132,11 @@ struct color {
 struct color darkest_color;
 const struct color hot_pink = { 1.0f, 0.07843f, 0.57647f, 0.01 };
 static int use_hot_pink = 0;
+
+/* color-ramp key structure */
+static struct color_ramp_key {
+	float ramp_key_r, ramp_key_g, ramp_key_b, ramp_key_a;
+} ramp_key[&bands_image_height];
 
 /* face, i, j -- coords on a cube map */
 struct fij {
@@ -489,7 +498,7 @@ static const float face_to_ydim_multiplier[] = { 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0
 static void init_particles(struct particle **pp, const int nparticles)
 {
 	float x, y, z, xo, yo;
-	const int bytes_per_pixel = start_image_has_alpha ? 4 : 3;
+	const int bytes_per_pixel = color_image_has_alpha ? 4 : 3;
 	unsigned char *pixel;
 	int pn, px, py;
 	struct fij fij = { 0, 0, 0 };
@@ -509,10 +518,10 @@ static void init_particles(struct particle **pp, const int nparticles)
 			if (fij.i < 0 || fij.i > DIM || fij.j < 0 || fij.j > DIM) {
 				printf("BAD fij: %d,%d\n", fij.i, fij.j);
 			}
-			xo = fij.i * start_image_width / (float) XDIM;
-			yo = fij.j * start_image_height / (float) YDIM;
+			xo = fij.i * color_image_width / (float) XDIM;
+			yo = fij.j * color_image_height / (float) YDIM;
 			px = ((int) xo) * bytes_per_pixel;
-			py = ((int) yo) * start_image_bytes_per_row;
+			py = ((int) yo) * color_image_bytes_per_row;
 		} else if (!stripe && !sinusoidal) {
 			fij = xyz_to_fij(&p[i].pos, DIM);
 			if (fij.i < 0 || fij.i > DIM || fij.j < 0 || fij.j > DIM) {
@@ -527,8 +536,8 @@ static void init_particles(struct particle **pp, const int nparticles)
 			yo = YDIM * face_to_ydim_multiplier[fij.f] + fij.j / 3.0;
 			xo = xo / (float) XDIM;
 			yo = yo / (float) YDIM;
-			px = ((int) (xo * start_image_width)) * bytes_per_pixel;
-			py = (((int) (yo * start_image_height)) * start_image_bytes_per_row);
+			px = ((int) (xo * color_image_width)) * bytes_per_pixel;
+			py = (((int) (yo * color_image_height)) * color_image_bytes_per_row);
 			//printf("x,y = %d, %d, pn = %d\n", px, py, pn);
 		} else if (stripe) {
 			if (vertical_bands)
@@ -536,8 +545,8 @@ static void init_particles(struct particle **pp, const int nparticles)
 			else
 				yo = (y + (float) DIM / 2.0) / (float) DIM;
 			xo = 0.5; 
-			px = ((int) (xo * start_image_width)) * bytes_per_pixel;
-			py = (((int) (yo * start_image_height)) * start_image_bytes_per_row);
+			px = ((int) (xo * color_image_width)) * bytes_per_pixel;
+			py = (((int) (yo * color_image_height)) * color_image_bytes_per_row);
 			//printf("xo = %f, yo=%f, px = %d, py = %d\n", xo, yo, px, py);
 		} else { /* sinusoidal */
 			if (!vertical_bands) {
@@ -550,8 +559,8 @@ static void init_particles(struct particle **pp, const int nparticles)
 				x1 = -abs_cos_lat * 0.5 + 0.5;
 				longitude = atan2f(z, x);
 				xo = (cos(longitude) * abs_cos_lat * 0.5f) * (x2 - x1) + 0.5f;
-				px = ((int) (xo * start_image_width)) * bytes_per_pixel;
-				py = (((int) (yo * start_image_height)) * start_image_bytes_per_row);
+				px = ((int) (xo * color_image_width)) * bytes_per_pixel;
+				py = (((int) (yo * color_image_height)) * color_image_bytes_per_row);
 			} else {
 				float abs_cos_lat, longitude, latitude, x1, x2;
 
@@ -562,20 +571,20 @@ static void init_particles(struct particle **pp, const int nparticles)
 				x1 = -abs_cos_lat * 0.5 + 0.5;
 				longitude = atan2f(y, x);
 				xo = (cos(longitude) * abs_cos_lat * 0.5f) * (x2 - x1) + 0.5f;
-				px = ((int) (xo * start_image_width)) * bytes_per_pixel;
-				py = (((int) (yo * start_image_height)) * start_image_bytes_per_row);
+				px = ((int) (xo * color_image_width)) * bytes_per_pixel;
+				py = (((int) (yo * color_image_height)) * color_image_bytes_per_row);
 			}
 		}
 		pn = py + px;
 		//printf("pn = %d\n", pn);
 		if (!cubemap_prefix)
-			pixel = (unsigned char *) &start_image[pn];
+			pixel = (unsigned char *) &color_image[pn];
 		else
 			pixel = (unsigned char *) &cubemap_image[fij.f][pn];
 		p[i].c.r = ((float) pixel[0]) / 255.0f;
 		p[i].c.g = ((float) pixel[1]) / 255.0f;
 		p[i].c.b = ((float) pixel[2]) / 255.0f;
-		p[i].c.a = start_image_has_alpha ? (float) pixel[3] / 255.0 : 1.0;
+		p[i].c.a = color_image_has_alpha ? (float) pixel[3] / 255.0 : 1.0;
 		p[i].c.a = 1.0; //start_image_has_alpha ? (float) pixel[3] / 255.0 : 1.0;
 	}
 	printf("\n");
@@ -617,11 +626,75 @@ static union vec3 curl2(union vec3 pos, union vec3 normalized_pos,
 	return rotated_ng;
 }
 
+static void assign_color_to_ramp_key()
+{
+	unsigned char *bands_sample_pixel;
+
+	int bands_bytes_per_pixel = &bands_image_has_alpha ? 4 : 3;
+	float bands_latitude;
+	float bands_sample_y = ((bands_latitude + 0.5 × M_PI) / M_PI);
+	
+	int bands_sample_pn = bands_bytes_per_pixel + ((int) (bands_sample_y * &bands_image_height))
+
+	bands_sample_pixel = (unsigned char *) &bands_input_image[bands_sample_pn]
+
+	int bands_sample_number;
+	for (bands_sample_number = 0; bands_sample_number < n_bands_samples; bands_sample_number++) {
+		ramp_key[bands_sample_number].ramp_key_r = ((float) bands_sample_pixel[0]) / 255.0f;
+		ramp_key[bands_sample_number].ramp_key_g = ((float) bands_sample_pixel[1]) / 255.0f;
+		ramp_key[bands_sample_number].ramp_key_b = ((float) bands_sample_pixel[2]) / 255.0f;
+		ramp_key[bands_sample_number].ramp_key_a = 1.0f;
+	}
+}
+
+static float rgb_ramp_lookup_red(float ramp_sample_location, int interpolate,)
+{
+	float f_red = ramp_sample_location;
+	int table_size_red = &bands_image_height;
+
+	int i_red = ((int) (f_red));
+	if (i_red < 0)
+		i_red = 0;
+	if (i_red >= table_size_red)
+		i_red = table_size_red - 1;
+	float t_red = f_red - ((float) (i_red));
+
+
+	float result_red = &ramp_key[i_red].ramp_key_r;
+
+	if (interpolate && t_red > 0.0)
+		result_red = (1.0 - t_red) * result_red + t_red * &ramp_key[i_red + 1].ramp_key_r;
+
+	return result_red;
+}
+
+
+static float rgb_ramp_lookup_blue(float ramp_sample_location, int interpolate,)
+{
+	float f_blue = ramp_sample_location;
+	int table_size_blue = &bands_image_height;
+
+	int i_blue = ((int) (f_blue));
+	if (i_blue < 0)
+		i_blue = 0;
+	if (i_blue >= table_size_blue)
+		i_blue = table_size_blue - 1;
+	float t_blue = f_blue - ((float) (i_blue));
+
+
+	float result_blue = &ramp_key[i_blue].ramp_key_b;
+
+	if (interpolate && t_blue > 0.0)
+		result_blue = (1.0 - t_blue) * result_blue + t_blue * &ramp_key[i_blue + 1].ramp_key_b;
+
+	return result_blue;
+}
+
 static float calculate_band_speed(float latitude)
 {
-	/* to the 5th power to make regions between bands wider. */
-	return ((1 - pole_attenuation) + pole_attenuation *
-		cosf(latitude)) * powf(cosf(latitude * num_bands), band_speed_powerf) * band_speed_factor;
+	float band_value = rgb_ramp_lookup_red(latitude, 1) + (rgb_ramp_lookup_blue(latitude, 1) * -1.0f);
+	
+	return ((1 - pole_attenuation) + pole_attenuation * cosf(latitude)) * band_value * band_speed_factor;
 }
 
 struct velocity_field_thread_info {
@@ -1207,7 +1280,8 @@ static void process_options(int argc, char *argv[])
 	int i, c;
 
 	output_file_prefix = default_output_file_prefix;
-	input_file = default_input_file;
+	color_input_file = default_color_input_file;
+	bands_input_file = default_bands_input_file;
 
 	while (1) {
 		int option_index;
@@ -1638,14 +1712,17 @@ int main(int argc, char *argv[])
 
 	printf("Allocating output image space\n");
 	allocate_output_images();
-	start_image_has_alpha = 0;
+	color_image_has_alpha = 0;
+	bands_image_has_alpha = 0;
 	if (cubemap_prefix) {
 		printf("Loading cubemap images\n");
 		load_cubemap_images(cubemap_prefix);
 	} else {
-		printf("Loading image\n");
-		start_image = load_image(input_file, &start_image_width, &start_image_height,
-						&start_image_has_alpha, &start_image_bytes_per_row);
+		printf("Loading images\n");
+		start_image = load_image(color_input_file, &color_image_width, &color_image_height,
+						&color_image_has_alpha, &color_image_bytes_per_row);
+		bands_image = load_image(bands_input_file, &bands_image_width, &bands_image_height,
+					 	&bands_image_has_alpha, &bands_image_bytes_per_row);
 	}
 #if 0	
 	write_png_image("blah.png", (unsigned char *) start_image, start_image_width,
